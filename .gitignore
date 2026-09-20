@@ -8,3 +8,6 @@ Thumbs.db
 # nunca versionar credenciais geradas em runtime
 .qbittorrent-credentials
 *.env
+
+# token pessoal do GitHub (gerado localmente, nunca versionar)
+github-token.txt
