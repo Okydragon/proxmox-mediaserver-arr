@@ -1,0 +1,10 @@
+# SO / editores
+.DS_Store
+Thumbs.db
+*.swp
+.vscode/
+.idea/
+
+# nunca versionar credenciais geradas em runtime
+.qbittorrent-credentials
+*.env
