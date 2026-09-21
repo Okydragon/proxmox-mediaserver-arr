@@ -170,12 +170,21 @@ select_debian_template() {
     t debian_updating_catalog
     pveam update >/dev/null 2>&1 || true
 
+    # IMPORTANTE: o catalogo do pveam lista templates de VARIAS arquiteturas
+    # (amd64, arm64, ...) misturados. Sem filtrar pela arquitetura real deste
+    # node, o script podia escolher um template incompativel (ex: baixar
+    # arm64 num host amd64), o que faz o container falhar ao iniciar com
+    # "Exec format error" -- o container chega a ser criado, mas nunca sobe.
+    local host_arch
+    host_arch="$(dpkg --print-architecture 2>/dev/null || true)"
+    [ -z "$host_arch" ] && host_arch="amd64"
+
     local catalog
-    catalog="$(pveam available -section system 2>/dev/null | awk '{print $2}' | grep -E '^debian-[0-9]+-standard_' || true)"
+    catalog="$(pveam available -section system 2>/dev/null | awk '{print $2}' | grep -E "^debian-[0-9]+-standard_.*_${host_arch}\.tar\.(zst|gz|xz)\$" || true)"
 
     if [ -z "$catalog" ]; then
         t debian_catalog_fail
-        TEMPLATE="debian-12-standard_12.7-1_amd64.tar.zst"
+        TEMPLATE="debian-12-standard_12.7-1_${host_arch}.tar.zst"
         return
     fi
 
