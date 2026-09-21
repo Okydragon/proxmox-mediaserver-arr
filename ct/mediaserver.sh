@@ -60,6 +60,10 @@ t() {
             media_unmounted_label) echo "not mounted" ;;
             media_mount_point_prompt) echo "This disk (UUID ${uuid}) is not mounted yet.\nWhere do you want to mount it? (created if it doesn't exist; it will be added to /etc/fstab by UUID, not by device name, so it keeps working even if the disk order changes)" ;;
             media_mount_fail) echo "Failed to mount the disk. Check the messages above and try again." ;;
+            media_raw_label) echo "NO filesystem -- will be formatted" ;;
+            media_format_title) echo "Format Disk (DESTRUCTIVE)" ;;
+            media_format_confirm) echo "WARNING: this will PERMANENTLY ERASE everything on ${dev} (${size}).\nThis action CANNOT be undone.\n\nAre you sure you want to format this disk as ext4?" ;;
+            media_formatting) echo "Formatting ${dev} as ext4..." ;;
             qbt_password_title) echo "qBittorrent Password" ;;
             qbt_password_prompt) echo "qBittorrent WebUI password (the username will be 'admin').\nAn easy-to-type suggestion is already filled in below - accept it or replace it with your own." ;;
             setup_title) echo "Media Server Setup" ;;
@@ -109,6 +113,10 @@ t() {
             media_unmounted_label) echo "não montado" ;;
             media_mount_point_prompt) echo "Este disco (UUID ${uuid}) ainda não está montado.\nOnde deseja montá-lo? (será criado se não existir; será adicionado ao /etc/fstab pelo UUID, não pelo nome do dispositivo, então continua funcionando mesmo se a ordem dos discos mudar)" ;;
             media_mount_fail) echo "Não consegui montar o disco. Confira as mensagens acima e tente de novo." ;;
+            media_raw_label) echo "SEM sistema de arquivos -- será formatado" ;;
+            media_format_title) echo "Formatar Disco (DESTRUTIVO)" ;;
+            media_format_confirm) echo "ATENÇÃO: isso vai APAGAR PERMANENTEMENTE tudo em ${dev} (${size}).\nEsta ação NÃO PODE ser desfeita.\n\nTem certeza que deseja formatar este disco como ext4?" ;;
+            media_formatting) echo "Formatando ${dev} como ext4..." ;;
             qbt_password_title) echo "Senha do qBittorrent" ;;
             qbt_password_prompt) echo "Senha da WebUI do qBittorrent (usuário será 'admin').\nJá vem uma sugestão fácil de digitar preenchida abaixo - aceite ou troque pela sua." ;;
             setup_title) echo "Media Server Setup" ;;
@@ -252,12 +260,19 @@ select_debian_template() {
 detect_media_candidates() {
     MEDIA_CANDIDATES=()
 
-    local root_src root_disk
+    # Sobe a arvore de dependencias em bloco ate o disco FISICO de verdade
+    # (pode levar varios "saltos": LV -> thin-pool -> particao -> disco).
+    local root_src root_disk root_walk
     root_src="$(findmnt -no SOURCE / 2>/dev/null || true)"
-    root_disk="$(lsblk -no PKNAME "$root_src" 2>/dev/null || true)"
-    if [ -z "$root_disk" ]; then
-        root_disk="$(basename "${root_src:-}")"
-    fi
+    root_disk="$(basename "${root_src:-}")"
+    root_walk="$root_src"
+    while true; do
+        local next_parent
+        next_parent="$(lsblk -no PKNAME "$root_walk" 2>/dev/null || true)"
+        [ -z "$next_parent" ] && break
+        root_disk="$next_parent"
+        root_walk="/dev/$next_parent"
+    done
 
     # VGs criados pelo ceph-volume (layout LVM usado pelo Ceph em clusters Proxmox)
     local ceph_vgs
@@ -274,12 +289,42 @@ detect_media_candidates() {
     # NOTA: usamos eval aqui porque lsblk -P emite pares KEY="value" já
     # devidamente escapados/entre aspas — é o próprio host (root) descrevendo
     # seus discos, não entrada de usuário, então é seguro no nosso contexto.
+    local lsblk_out
+    lsblk_out="$(lsblk -P -o NAME,MOUNTPOINT,FSTYPE,SIZE,PKNAME,TYPE,UUID)"
+
+    # Primeira passada: descobre quem TEM particoes filhas (ex: "sda" e pai de
+    # "sda1"). Um disco cru com particoes nao deve ser oferecido pra formatar
+    # diretamente -- a particao (sda1) e que e o candidato certo.
+    local -A has_children=()
+    while IFS= read -r line; do
+        eval "$line"
+        [ -n "${PKNAME:-}" ] && has_children["$PKNAME"]=1
+    done <<< "$lsblk_out"
+
     while IFS= read -r line; do
         eval "$line"
 
         # Sem ponto de montagem E sem sistema de arquivos reconhecido -> disco
-        # "cru". Ainda nao suportado aqui (precisaria formatar), entao pulamos.
+        # "cru" (sem nada gravado ainda). So oferecemos como candidato pra
+        # FORMATAR se ele nao tiver particoes filhas (ver acima).
         if [ -z "${MOUNTPOINT:-}" ] && [ -z "${FSTYPE:-}" ]; then
+            if [ -n "${has_children[$NAME]:-}" ]; then
+                continue
+            fi
+            # So oferecemos para formatar discos/particoes "de verdade"
+            # (TYPE=disk|part). Volumes LVM sem FSTYPE/MOUNTPOINT quase
+            # sempre sao "encanamento" interno do Proxmox/Ceph (thin-pool
+            # metadata/data, discos de VM orfaos) -- nunca um alvo seguro
+            # para mkfs.
+            case "${TYPE:-}" in
+                disk|part) : ;;
+                *) continue ;;
+            esac
+            local raw_disk_base="${PKNAME:-$NAME}"
+            if [ -n "$root_disk" ] && { [ "$raw_disk_base" = "$root_disk" ] || [ "$NAME" = "$root_disk" ]; }; then
+                continue
+            fi
+            MEDIA_CANDIDATES+=("/dev/${NAME}|${MOUNTPOINT:-}|${SIZE:-?}|RAW|")
             continue
         fi
 
@@ -314,7 +359,7 @@ detect_media_candidates() {
         fi
 
         MEDIA_CANDIDATES+=("/dev/${NAME}|${MOUNTPOINT:-}|${SIZE:-?}|${FSTYPE:-?}|${UUID:-}")
-    done < <(lsblk -P -o NAME,MOUNTPOINT,FSTYPE,SIZE,PKNAME,TYPE,UUID)
+    done <<< "$lsblk_out"
 }
 
 # Monta (por UUID, nunca por /dev/sdX) um disco candidato que ainda nao tem
@@ -351,6 +396,27 @@ mount_unmounted_disk() {
     echo "$new_mount"
 }
 
+# Formata (ext4) um disco/particao sem nenhum sistema de arquivos, com
+# confirmacao explicita antes -- e destrutivo e irreversivel, entao pedimos
+# uma confirmacao clara (--defaultno: o usuario precisa mover o foco pra
+# "Sim" de proposito, nao basta apertar Enter). Depois de formatar, reusa
+# mount_unmounted_disk() pra montar por UUID e persistir no fstab.
+format_and_mount_disk() {
+    local dev="$1" size="$2"
+
+    if ! whiptail --yesno "$(t media_format_confirm)" 14 78 --defaultno --title "$(t media_format_title)"; then
+        return 1
+    fi
+
+    t media_formatting
+    mkfs.ext4 -F -L midia "$dev"
+
+    local uuid
+    uuid="$(blkid -s UUID -o value "$dev" 2>/dev/null || true)"
+
+    mount_unmounted_disk "$dev" "ext4" "$uuid"
+}
+
 # Monta o menu de seleção (ou cai para digitação manual) e define $MEDIA_PATH
 select_media_path() {
     detect_media_candidates
@@ -366,7 +432,11 @@ select_media_path() {
     for entry in "${MEDIA_CANDIDATES[@]}"; do
         IFS='|' read -r dev mnt size fstype uuid <<< "$entry"
         local label="$mnt"
-        [ -z "$label" ] && label="[$(t media_unmounted_label)]"
+        if [ "$fstype" = "RAW" ]; then
+            label="[$(t media_raw_label)]"
+        elif [ -z "$label" ]; then
+            label="[$(t media_unmounted_label)]"
+        fi
         menu_args+=("$i" "$label  (${size}, ${fstype}, ${dev})")
         i=$((i+1))
     done
@@ -377,13 +447,23 @@ select_media_path() {
 
     if [ "$choice" = "MANUAL" ] || [ -z "$choice" ]; then
         MEDIA_PATH=$(whiptail --inputbox "$(t media_manual_short)" 10 70 "$MEDIA_PATH_DEFAULT" --title "$(t media_storage_title)" 3>&1 1>&2 2>&3)
-    else
-        IFS='|' read -r dev mnt size fstype uuid <<< "${MEDIA_CANDIDATES[$choice]}"
-        if [ -z "$mnt" ]; then
+        return
+    fi
+
+    IFS='|' read -r dev mnt size fstype uuid <<< "${MEDIA_CANDIDATES[$choice]}"
+    if [ -z "$mnt" ]; then
+        if [ "$fstype" = "RAW" ]; then
+            if ! mnt="$(format_and_mount_disk "$dev" "$size")"; then
+                # Usuario cancelou a formatacao -- cai para digitacao manual
+                # em vez de continuar com um MEDIA_PATH vazio/invalido.
+                MEDIA_PATH=$(whiptail --inputbox "$(t media_manual_short)" 10 70 "$MEDIA_PATH_DEFAULT" --title "$(t media_storage_title)" 3>&1 1>&2 2>&3)
+                return
+            fi
+        else
             mnt="$(mount_unmounted_disk "$dev" "$fstype" "$uuid")"
         fi
-        MEDIA_PATH=$(whiptail --inputbox "$(t media_subpath_prompt)" 10 70 "$mnt" --title "$(t media_storage_title)" 3>&1 1>&2 2>&3)
     fi
+    MEDIA_PATH=$(whiptail --inputbox "$(t media_subpath_prompt)" 10 70 "$mnt" --title "$(t media_storage_title)" 3>&1 1>&2 2>&3)
 }
 
 # ---------- Senha da WebUI do qBittorrent ----------
