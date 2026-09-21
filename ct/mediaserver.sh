@@ -29,7 +29,9 @@ LANG_CHOICE=$(whiptail --menu "Escolha o idioma / Choose your language" 12 60 2 
     "pt" "Português (Brasil)" \
     "en" "English" \
     --default-item "pt" --title "Idioma / Language" 3>&1 1>&2 2>&3)
-[ -z "$LANG_CHOICE" ] && LANG_CHOICE="pt"
+if [ -z "$LANG_CHOICE" ]; then
+    LANG_CHOICE="pt"
+fi
 
 # ---------- Mensagens (pt-BR / en) ----------
 # t() devolve o texto certo pra chave pedida, no idioma escolhido acima. As
@@ -196,13 +198,17 @@ select_debian_template() {
     local menu_args=()
     local default_choice=""
     while IFS= read -r major; do
-        [ -z "$default_choice" ] && default_choice="$major"
+        if [ -z "$default_choice" ]; then
+            default_choice="$major"
+        fi
         menu_args+=("$major" "Debian ${major} — ${latest_by_major[$major]}")
     done <<< "$sorted_majors"
 
     local choice
     choice=$(whiptail --menu "$(t debian_menu_prompt)" 16 78 6 "${menu_args[@]}" --default-item "$default_choice" --title "$(t debian_menu_title)" 3>&1 1>&2 2>&3)
-    [ -z "$choice" ] && choice="$default_choice"
+    if [ -z "$choice" ]; then
+        choice="$default_choice"
+    fi
 
     TEMPLATE="${latest_by_major[$choice]}"
     t debian_using_template
@@ -229,7 +235,9 @@ detect_media_candidates() {
     local root_src root_disk
     root_src="$(findmnt -no SOURCE / 2>/dev/null || true)"
     root_disk="$(lsblk -no PKNAME "$root_src" 2>/dev/null || true)"
-    [ -z "$root_disk" ] && root_disk="$(basename "${root_src:-}")"
+    if [ -z "$root_disk" ]; then
+        root_disk="$(basename "${root_src:-}")"
+    fi
 
     # VGs criados pelo ceph-volume (layout LVM usado pelo Ceph em clusters Proxmox)
     local ceph_vgs
@@ -354,7 +362,9 @@ select_qbt_password() {
     local suggestion
     suggestion="$(generate_memorable_password)"
     QBT_PASSWORD=$(whiptail --inputbox "$(t qbt_password_prompt)" 11 74 "$suggestion" --title "$(t qbt_password_title)" 3>&1 1>&2 2>&3)
-    [ -z "$QBT_PASSWORD" ] && QBT_PASSWORD="$suggestion"
+    if [ -z "$QBT_PASSWORD" ]; then
+        QBT_PASSWORD="$suggestion"
+    fi
 }
 
 # ---------- Prompts interativos ----------
