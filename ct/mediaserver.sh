@@ -460,6 +460,25 @@ if [ "$USE_GPU" = "yes" ]; then
                 TMP=$VIDEO_GID; VIDEO_GID=$RENDER_GID; RENDER_GID=$TMP
             fi
 
+            # GIDs de video/render costumam ficar FORA do range padrão de um
+            # container unprivileged (100000-165535). Mapear um GID assim 1:1
+            # (host == dentro do container) exige que o HOST autorize
+            # explicitamente essa faixa em /etc/subgid -- sem isso, "pct start"
+            # falha com "newgidmap: gid range [...] not allowed", mesmo com o
+            # lxc.idmap certo no .conf do container.
+            ensure_subgid_grant() {
+                local gid="$1"
+                if awk -F: -v gid="$gid" '
+                    $1 == "root" && gid >= $2 && gid < ($2 + $3) { found=1 }
+                    END { exit !found }
+                ' /etc/subgid 2>/dev/null; then
+                    return 0
+                fi
+                echo "root:${gid}:1" >> /etc/subgid
+            }
+            ensure_subgid_grant "$VIDEO_GID"
+            ensure_subgid_grant "$RENDER_GID"
+
             {
                 echo "lxc.cgroup2.devices.allow: c 226:0 rwm"
                 echo "lxc.cgroup2.devices.allow: c 226:128 rwm"
