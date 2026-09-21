@@ -108,13 +108,13 @@ t() {
     fi
 }
 
-echo "$(t updating_system)"
+t updating_system
 apt-get update -y && apt-get upgrade -y
 
-echo "$(t installing_deps)"
+t installing_deps
 apt-get install -y ca-certificates curl gnupg jq
 
-echo "$(t installing_docker)"
+t installing_docker
 install -m 0755 -d /etc/apt/keyrings
 curl -fsSL https://download.docker.com/linux/debian/gpg -o /etc/apt/keyrings/docker.asc
 chmod a+r /etc/apt/keyrings/docker.asc
@@ -129,7 +129,7 @@ apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin do
 
 systemctl enable --now docker
 
-echo "$(t creating_folders)"
+t creating_folders
 mkdir -p "$STACK_DIR"
 for app in jellyfin qbittorrent prowlarr radarr sonarr lidarr bazarr flaresolverr; do
     mkdir -p "$STACK_DIR/$app/config"
@@ -139,7 +139,7 @@ for sub in downloads filmes series musicas; do
 done
 chown -R "$PUID:$PGID" "$STACK_DIR" "$MEDIA_PATH"
 
-echo "$(t generating_env)"
+t generating_env
 cat > "$STACK_DIR/.env" <<EOF
 PUID=$PUID
 PGID=$PGID
@@ -148,7 +148,7 @@ MEDIA_PATH=$MEDIA_PATH
 STACK_DIR=$STACK_DIR
 EOF
 
-echo "$(t generating_compose)"
+t generating_compose
 cat > "$STACK_DIR/docker-compose.yml" <<'COMPOSE'
 services:
   jellyfin:
@@ -264,7 +264,7 @@ services:
       - LOG_LEVEL=info
 COMPOSE
 
-echo "$(t starting_stack)"
+t starting_stack
 cd "$STACK_DIR"
 docker compose up -d
 
@@ -280,7 +280,7 @@ wait_for_apikey() {
         sleep 3
         waited=$((waited+3))
         if [ "$waited" -ge "$timeout" ]; then
-            echo "$(t apikey_timeout)"
+            t apikey_timeout
             return 1
         fi
     done
@@ -321,7 +321,7 @@ apply_qbt_password() {
         "http://localhost:8080/api/v2/auth/login")
 
     if [ "$login_http" != "200" ]; then
-        echo "$(t qbt_login_failed)"
+        t qbt_login_failed
         rm -f "$cookie_jar"
         return 1
     fi
@@ -333,25 +333,25 @@ apply_qbt_password() {
     rm -f "$cookie_jar"
 
     if [ "$setpref_http" != "200" ]; then
-        echo "$(t qbt_setpref_failed)"
+        t qbt_setpref_failed
         return 1
     fi
 
     return 0
 }
 
-echo "$(t applying_qbt_password)"
+t applying_qbt_password
 QBT_TEMP_PASSWORD="$(wait_for_qbt_temp_password)" || QBT_TEMP_PASSWORD=""
 if [ -n "$QBT_TEMP_PASSWORD" ]; then
     if apply_qbt_password "$QBT_TEMP_PASSWORD"; then
         QBT_PASSWORD_SET="yes"
-        echo "$(t qbt_password_ok)"
+        t qbt_password_ok
     else
-        echo "$(t qbt_password_manual)"
+        t qbt_password_manual
     fi
 else
-    echo "$(t qbt_temp_not_found)"
-    echo "$(t qbt_temp_not_found_hint)"
+    t qbt_temp_not_found
+    t qbt_temp_not_found_hint
 fi
 
 # Guarda as credenciais num arquivo com permissão restrita — mais seguro do
@@ -364,7 +364,7 @@ fi
 } > "${STACK_DIR}/.qbittorrent-credentials"
 chmod 600 "${STACK_DIR}/.qbittorrent-credentials"
 
-echo "$(t waiting_apikeys)"
+t waiting_apikeys
 RADARR_KEY=$(wait_for_apikey "$STACK_DIR/radarr/config/config.xml") || RADARR_KEY=""
 SONARR_KEY=$(wait_for_apikey "$STACK_DIR/sonarr/config/config.xml") || SONARR_KEY=""
 LIDARR_KEY=$(wait_for_apikey "$STACK_DIR/lidarr/config/config.xml") || LIDARR_KEY=""
@@ -372,13 +372,13 @@ PROWLARR_KEY=$(wait_for_apikey "$STACK_DIR/prowlarr/config/config.xml") || PROWL
 
 add_download_client() {
     local app_name="$1" port="$2" api_key="$3" category="$4"
-    [ -z "$api_key" ] && { echo "$(t skip_app_no_key)"; return; }
+    [ -z "$api_key" ] && { t skip_app_no_key; return; }
 
     if [ "$QBT_PASSWORD_SET" != "yes" ]; then
-        echo "$(t qbt_not_confirmed_warning)"
+        t qbt_not_confirmed_warning
     fi
 
-    echo "$(t connecting_qbt_app)"
+    t connecting_qbt_app
     curl -s -o /dev/null -w "    HTTP %{http_code}\n" -X POST "http://localhost:${port}/api/v3/downloadclient" \
         -H "X-Api-Key: ${api_key}" -H "Content-Type: application/json" \
         -d "{
@@ -400,9 +400,9 @@ add_download_client() {
 
 add_prowlarr_app() {
     local app_name="$1" impl="$2" contract="$3" port="$4" api_key="$5"
-    [ -z "$api_key" ] || [ -z "$PROWLARR_KEY" ] && { echo "$(t skip_app_no_key_prowlarr)"; return; }
+    [ -z "$api_key" ] || [ -z "$PROWLARR_KEY" ] && { t skip_app_no_key_prowlarr; return; }
 
-    echo "$(t registering_prowlarr_app)"
+    t registering_prowlarr_app
     curl -s -o /dev/null -w "    HTTP %{http_code}\n" -X POST "http://localhost:9696/api/v1/applications" \
         -H "X-Api-Key: ${PROWLARR_KEY}" -H "Content-Type: application/json" \
         -d "{
@@ -419,12 +419,12 @@ add_prowlarr_app() {
         }" || true
 }
 
-echo "$(t connecting_qbt_all)"
+t connecting_qbt_all
 add_download_client "Radarr" 7878 "$RADARR_KEY" "radarr"
 add_download_client "Sonarr" 8989 "$SONARR_KEY" "sonarr"
 add_download_client "Lidarr" 8686 "$LIDARR_KEY" "lidarr"
 
-echo "$(t syncing_prowlarr)"
+t syncing_prowlarr
 add_prowlarr_app "Radarr" "Radarr" "RadarrSettings" 7878 "$RADARR_KEY"
 add_prowlarr_app "Sonarr" "Sonarr" "SonarrSettings" 8989 "$SONARR_KEY"
 add_prowlarr_app "Lidarr" "Lidarr" "LidarrSettings" 8686 "$LIDARR_KEY"
@@ -432,7 +432,7 @@ add_prowlarr_app "Lidarr" "Lidarr" "LidarrSettings" 8686 "$LIDARR_KEY"
 # --- Bazarr -> Radarr/Sonarr ---
 # OBS: o schema exato da API do Bazarr muda entre versões. Este bloco é best-effort;
 # se falhar, configure manualmente em Bazarr > Settings > Radarr/Sonarr (é rápido).
-echo "$(t trying_bazarr)"
+t trying_bazarr
 BAZARR_URL="http://localhost:6767"
 if [ -n "$RADARR_KEY" ]; then
     curl -s -o /dev/null -w "  Bazarr<->Radarr HTTP %{http_code}\n" -X POST "${BAZARR_URL}/api/system/settings" \
@@ -447,17 +447,17 @@ fi
 
 echo ""
 echo "==================================================="
-echo "$(t install_done)"
-echo "$(t important)"
+t install_done
+t important
 if [ "$QBT_PASSWORD_SET" = "yes" ]; then
-    echo "$(t qbt_summary_ok)"
-    echo "$(t qbt_summary_ok_note)"
+    t qbt_summary_ok
+    t qbt_summary_ok_note
 else
-    echo "$(t qbt_summary_fail1)"
-    echo "$(t qbt_summary_fail2)"
-    echo "$(t qbt_summary_fail3)"
+    t qbt_summary_fail1
+    t qbt_summary_fail2
+    t qbt_summary_fail3
 fi
-echo "$(t step2_indexers)"
-echo "$(t step3_bazarr)"
-echo "$(t step3_bazarr2)"
+t step2_indexers
+t step3_bazarr
+t step3_bazarr2
 echo "==================================================="

@@ -31,6 +31,7 @@ LANG_CHOICE=$(whiptail --menu "Escolha o idioma / Choose your language" 12 60 2 
 # strings referenciam variáveis do script diretamente (ex: $CT_ID) — como é
 # uma função de verdade, elas são resolvidas na hora da chamada, não na hora
 # em que t() foi definida.
+# shellcheck disable=SC2028  # \n eh interpretado literalmente pelo whiptail para quebra de linha (intencional)
 t() {
     local key="$1"
     if [ "$LANG_CHOICE" = "en" ]; then
@@ -129,7 +130,7 @@ t() {
 }
 
 if [ ! -f "$INSTALL_SCRIPT" ]; then
-    echo "$(t err_install_not_found)"
+    t err_install_not_found
     exit 1
 fi
 
@@ -159,14 +160,14 @@ TZ_DEFAULT="America/Sao_Paulo"
 select_debian_template() {
     TEMPLATE_STORAGE="$TEMPLATE_STORAGE_DEFAULT"
 
-    echo "$(t debian_updating_catalog)"
+    t debian_updating_catalog
     pveam update >/dev/null 2>&1 || true
 
     local catalog
     catalog="$(pveam available -section system 2>/dev/null | awk '{print $2}' | grep -E '^debian-[0-9]+-standard_' || true)"
 
     if [ -z "$catalog" ]; then
-        echo "$(t debian_catalog_fail)"
+        t debian_catalog_fail
         TEMPLATE="debian-12-standard_12.7-1_amd64.tar.zst"
         return
     fi
@@ -199,10 +200,10 @@ select_debian_template() {
     [ -z "$choice" ] && choice="$default_choice"
 
     TEMPLATE="${latest_by_major[$choice]}"
-    echo "$(t debian_using_template)"
+    t debian_using_template
 
     if ! pveam list "$TEMPLATE_STORAGE" 2>/dev/null | grep -q "$TEMPLATE"; then
-        echo "$(t debian_downloading)"
+        t debian_downloading
         pveam download "$TEMPLATE_STORAGE" "$TEMPLATE"
     fi
 }
@@ -272,7 +273,7 @@ select_media_path() {
     detect_media_candidates
 
     if [ "${#MEDIA_CANDIDATES[@]}" -eq 0 ]; then
-        echo "$(t media_none_found)"
+        t media_none_found
         MEDIA_PATH=$(whiptail --inputbox "$(t media_manual_full)" 10 70 "$MEDIA_PATH_DEFAULT" --title "$(t media_storage_title)" 3>&1 1>&2 2>&3)
         return
     fi
@@ -382,7 +383,7 @@ if whiptail --yesno "$(t net_prompt_yesno)" 14 78 --title "$(t net_title)"; then
     CT_DNS=$(whiptail --inputbox "$(t net_dns_prompt)" 9 70 "" --title "$(t net_title)" 3>&1 1>&2 2>&3)
 
     if [ -z "$CT_IP_CIDR" ] || [ -z "$CT_GATEWAY" ]; then
-        echo "$(t net_dhcp_warning)"
+        t net_dhcp_warning
     else
         NET_CONFIG="name=eth0,bridge=${CT_BRIDGE_DEFAULT},ip=${CT_IP_CIDR},gw=${CT_GATEWAY}"
     fi
@@ -393,7 +394,7 @@ if [ ! -d "$MEDIA_PATH" ]; then
     if whiptail --yesno "$(t media_dir_missing_prompt)" 8 60; then
         mkdir -p "$MEDIA_PATH"
     else
-        echo "$(t media_dir_abort)"
+        t media_dir_abort
         exit 1
     fi
 fi
@@ -426,13 +427,13 @@ pct set "$CT_ID" -mp0 "${MEDIA_PATH},mp=/mnt/midia"
 # ---------- GPU Passthrough (opcional) ----------
 if [ "$USE_GPU" = "yes" ]; then
     if [ ! -e /dev/dri ]; then
-        echo "$(t gpu_warn_no_dri)"
+        t gpu_warn_no_dri
     else
         VIDEO_GID=$(getent group video | cut -d: -f3)
         RENDER_GID=$(getent group render | cut -d: -f3)
 
         if [ -z "$VIDEO_GID" ] || [ -z "$RENDER_GID" ]; then
-            echo "$(t gpu_warn_no_groups)"
+            t gpu_warn_no_groups
         else
             # Garante ordem video < render para o cálculo do idmap abaixo
             if [ "$VIDEO_GID" -gt "$RENDER_GID" ]; then
@@ -451,15 +452,15 @@ if [ "$USE_GPU" = "yes" ]; then
                 echo "lxc.idmap: g $((RENDER_GID+1)) $((100000+RENDER_GID+1)) $((65536-RENDER_GID-1))"
             } >> "/etc/pve/lxc/${CT_ID}.conf"
 
-            echo "$(t gpu_configured)"
-            echo "$(t gpu_important)"
+            t gpu_configured
+            t gpu_important
         fi
     fi
 fi
 
 # ---------- Start + provisionamento ----------
 pct start "$CT_ID"
-echo "$(t waiting_network)"
+t waiting_network
 sleep 8
 
 pct push "$CT_ID" "$INSTALL_SCRIPT" /root/mediaserver-install.sh
@@ -478,7 +479,7 @@ CT_IP=$(pct exec "$CT_ID" -- hostname -I | awk '{print $1}')
 
 echo ""
 echo "==================================================="
-echo "$(t summary_ready)"
+t summary_ready
 echo " Jellyfin:   http://${CT_IP}:8096"
 echo " qBittorrent: http://${CT_IP}:8080"
 echo " Prowlarr:   http://${CT_IP}:9696"
@@ -487,8 +488,8 @@ echo " Sonarr:     http://${CT_IP}:8989"
 echo " Lidarr:     http://${CT_IP}:8686"
 echo " Bazarr:     http://${CT_IP}:6767"
 echo "==================================================="
-echo "$(t summary_qbt)"
-echo "$(t summary_qbt_note1)"
-echo "$(t summary_qbt_note2)"
-echo "$(t summary_next_steps)"
+t summary_qbt
+t summary_qbt_note1
+t summary_qbt_note2
+t summary_next_steps
 echo "==================================================="
