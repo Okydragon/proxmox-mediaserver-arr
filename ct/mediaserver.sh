@@ -453,6 +453,19 @@ pct create "$CT_ID" "${TEMPLATE_STORAGE}:vztmpl/${TEMPLATE}" \
 # ---------- Bind mount da mídia ----------
 pct set "$CT_ID" -mp0 "${MEDIA_PATH},mp=/mnt/midia"
 
+# Pre-cria as subpastas de midia e ajusta o dono JA NO HOST, usando o UID/GID
+# "deslocado" que um container unprivileged usa (offset padrao +100000).
+# Fazer esse chown de DENTRO do container nao funciona: um container
+# unprivileged nao tem permissao para mudar o dono de arquivos vindos de um
+# bind mount do host (da "Operation not permitted"), mesmo que o UID/GID
+# alvo esteja dentro do range que o proprio container enxerga como seu.
+HOST_MEDIA_UID=$((100000 + PUID_DEFAULT))
+HOST_MEDIA_GID=$((100000 + PGID_DEFAULT))
+for sub in downloads filmes series musicas; do
+    mkdir -p "${MEDIA_PATH}/${sub}"
+    chown -R "${HOST_MEDIA_UID}:${HOST_MEDIA_GID}" "${MEDIA_PATH}/${sub}"
+done
+
 # ---------- GPU Passthrough (opcional) ----------
 if [ "$USE_GPU" = "yes" ]; then
     if [ ! -e /dev/dri ]; then

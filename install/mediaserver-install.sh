@@ -142,7 +142,11 @@ done
 for sub in downloads filmes series musicas; do
     mkdir -p "$MEDIA_PATH/$sub"
 done
-chown -R "$PUID:$PGID" "$STACK_DIR" "$MEDIA_PATH"
+chown -R "$PUID:$PGID" "$STACK_DIR"
+# Nao tentamos chown em $MEDIA_PATH aqui: e um bind mount vindo do host,
+# e um container unprivileged nao tem permissao para mudar o dono desses
+# arquivos (ver ct/mediaserver.sh, onde isso ja e feito no host antes do
+# container subir).
 
 t generating_env
 cat > "$STACK_DIR/.env" <<EOF
