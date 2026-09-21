@@ -13,7 +13,7 @@
 # t() logo abaixo; comentários no código continuam só em português, já que
 # são só para quem for ler/manter o script.
 
-set -euo pipefail
+set -Eeuo pipefail
 
 # Diagnostico temporario: mostra comando + linha exatos se o script morrer
 # por causa do set -e (sem isso, a saida seria totalmente silenciosa).
