@@ -30,10 +30,15 @@ TZ="${TZ:-America/Sao_Paulo}"
 QBT_USER="admin"
 QBT_PASSWORD="${QBT_PASSWORD:-qbt${RANDOM}${RANDOM}}"
 QBT_PASSWORD_SET="no"
+SMB_ENABLE="${SMB_ENABLE:-no}"
+SMB_USER="${SMB_USER:-}"
+SMB_PASSWORD="${SMB_PASSWORD:-}"
+SMB_READY="no"
 LANG_CHOICE="${LANG_CHOICE:-pt}"
 STACK_DIR="/opt/mediaserver"
 
 # ---------- Mensagens (pt-BR / en) ----------
+# shellcheck disable=SC2028  # backslashes literais de proposito (caminho UNC do Windows na chave smb_ready); bash echo (sem xpg_echo) nao expande escapes
 t() {
     local key="$1"
     if [ "$LANG_CHOICE" = "en" ]; then
@@ -52,6 +57,14 @@ t() {
             qbt_temp_not_found_hint) echo "  Set the qBittorrent password manually: docker logs qbittorrent | grep -i password" ;;
             qbt_login_failed) echo "  WARNING: login with the qBittorrent temporary password failed (HTTP $login_http)." ;;
             qbt_setpref_failed) echo "  WARNING: failed to set the final qBittorrent password (HTTP $setpref_http)." ;;
+            smb_installing) echo ">> Setting up the SMB network share..." ;;
+            smb_skip_no_creds) echo "  WARNING: SMB was enabled but no username/password was provided; skipping the share." ;;
+            smb_ready) echo "  SMB share ready (\\\\<container-ip>\\midia)." ;;
+            smb_setup_failed) echo "  WARNING: could not fully set up the SMB share. Check manually: systemctl status smbd" ;;
+            applying_unified_auth) echo ">> Applying unified login (same qBittorrent user/password) to the *arr apps..." ;;
+            unified_auth_ok) echo "  - $app_name: login configured (user: $QBT_USER)." ;;
+            unified_auth_fetch_failed) echo "  - WARNING: could not read $app_name's current settings; skipping its login setup (check manually in Settings)." ;;
+            unified_auth_failed) echo "  - WARNING: could not configure login on $app_name automatically (HTTP $http_code); set it manually in Settings > General/Authentication." ;;
             waiting_apikeys) echo ">> Waiting for the *arr apps to generate their API keys (can take up to 2 min)..." ;;
             apikey_timeout) echo "WARNING: timeout waiting for the API key at $config_file. Skipping this app's integration." ;;
             skip_app_no_key) echo "  - Skipping $app_name (no API key)" ;;
@@ -69,6 +82,9 @@ t() {
             qbt_summary_fail1) echo " 1) Could NOT confirm the qBittorrent password change automatically." ;;
             qbt_summary_fail2) echo "    Run: docker logs qbittorrent | grep -i password" ;;
             qbt_summary_fail3) echo "    And set this password manually in Settings > WebUI: ${QBT_PASSWORD}" ;;
+            smb_summary_ok) echo "    SMB share - user: ${SMB_USER} / password: the one you set during install" ;;
+            smb_summary_fail) echo "    WARNING: could not fully set up the SMB share automatically. Check manually: systemctl status smbd" ;;
+            unified_auth_summary) echo "    Radarr/Sonarr/Lidarr/Prowlarr/Bazarr now also require login, using the SAME user/password as qBittorrent above (check the warnings above if any app didn't apply it automatically)." ;;
             step2_indexers) echo " 2) Register your private indexers manually in Prowlarr." ;;
             step3_bazarr) echo " 3) Check the Bazarr<->Radarr/Sonarr connection in Settings - the Bazarr API" ;;
             step3_bazarr2) echo "    schema changes between versions and may need manual adjustment." ;;
@@ -89,6 +105,14 @@ t() {
             qbt_temp_not_found_hint) echo "  Configure a senha do qBittorrent manualmente: docker logs qbittorrent | grep -i password" ;;
             qbt_login_failed) echo "  AVISO: login com a senha temporária do qBittorrent falhou (HTTP $login_http)." ;;
             qbt_setpref_failed) echo "  AVISO: falha ao definir a senha definitiva do qBittorrent (HTTP $setpref_http)." ;;
+            smb_installing) echo ">> Configurando o compartilhamento SMB..." ;;
+            smb_skip_no_creds) echo "  AVISO: SMB foi ativado mas usuário/senha não foram informados; pulando o compartilhamento." ;;
+            smb_ready) echo "  Compartilhamento SMB pronto (\\\\<ip-do-container>\\midia)." ;;
+            smb_setup_failed) echo "  AVISO: não consegui configurar o compartilhamento SMB por completo. Confira manualmente: systemctl status smbd" ;;
+            applying_unified_auth) echo ">> Aplicando login unificado (mesmo usuário/senha do qBittorrent) nos apps *arr..." ;;
+            unified_auth_ok) echo "  - $app_name: login configurado (usuário: $QBT_USER)." ;;
+            unified_auth_fetch_failed) echo "  - AVISO: não consegui ler as configurações atuais do $app_name; pulando o login desse app (confira manualmente em Settings)." ;;
+            unified_auth_failed) echo "  - AVISO: não consegui configurar o login no $app_name automaticamente (HTTP $http_code); defina manualmente em Settings > General/Authentication." ;;
             waiting_apikeys) echo ">> Aguardando os apps *arr gerarem suas API keys (pode levar até 2 min)..." ;;
             apikey_timeout) echo "AVISO: timeout esperando API key em $config_file. Pulando integração deste app." ;;
             skip_app_no_key) echo "  - Pulando $app_name (sem API key)" ;;
@@ -106,6 +130,9 @@ t() {
             qbt_summary_fail1) echo " 1) NÃO consegui confirmar a troca de senha do qBittorrent automaticamente." ;;
             qbt_summary_fail2) echo "    Rode: docker logs qbittorrent | grep -i password" ;;
             qbt_summary_fail3) echo "    E defina esta senha manualmente em Settings > WebUI: ${QBT_PASSWORD}" ;;
+            smb_summary_ok) echo "    Compartilhamento SMB - usuário: ${SMB_USER} / senha: a que você definiu na instalação" ;;
+            smb_summary_fail) echo "    AVISO: não consegui configurar o compartilhamento SMB por completo. Confira manualmente: systemctl status smbd" ;;
+            unified_auth_summary) echo "    Radarr/Sonarr/Lidarr/Prowlarr/Bazarr agora também exigem login, usando o MESMO usuário/senha do qBittorrent acima (confira os avisos acima caso algum app não tenha aplicado automaticamente)." ;;
             step2_indexers) echo " 2) Cadastre seus indexers privados manualmente no Prowlarr." ;;
             step3_bazarr) echo " 3) Confira a conexão Bazarr<->Radarr/Sonarr em Settings - o schema da API" ;;
             step3_bazarr2) echo "    do Bazarr muda entre versões e pode precisar de ajuste manual." ;;
@@ -147,6 +174,71 @@ chown -R "$PUID:$PGID" "$STACK_DIR"
 # e um container unprivileged nao tem permissao para mudar o dono desses
 # arquivos (ver ct/mediaserver.sh, onde isso ja e feito no host antes do
 # container subir).
+
+# ---------- Compartilhamento SMB (opcional) ----------
+# O usuario do SMB nao precisa ter o MESMO uid dos containers Docker (PUID)
+# -- basta pertencer ao MESMO grupo (PGID) e a pasta de midia ser gravavel
+# pelo grupo. Isso evita ter que reservar/adivinhar um uid especifico so
+# pro Samba (que roda direto no SO do container, fora do Docker).
+setup_smb_share() {
+    [ "$SMB_ENABLE" != "yes" ] && return
+    if [ -z "$SMB_USER" ] || [ -z "$SMB_PASSWORD" ]; then
+        t smb_skip_no_creds
+        return
+    fi
+
+    t smb_installing
+    apt-get install -y samba samba-common-bin
+
+    if ! getent group "$PGID" >/dev/null 2>&1; then
+        groupadd -g "$PGID" mediashare
+    fi
+
+    if ! id -u "$SMB_USER" >/dev/null 2>&1; then
+        useradd --no-create-home --shell /usr/sbin/nologin -g "$PGID" "$SMB_USER"
+    else
+        usermod -g "$PGID" "$SMB_USER"
+    fi
+
+    # smbpasswd exige que o usuario do Linux ja exista (acima) antes de
+    # aceitar uma senha de Samba pra ele. "-s" le a senha via stdin, em vez
+    # de argumento de linha de comando (que ficaria visivel pra qualquer um
+    # rodando "ps" enquanto o comando executa).
+    if ! printf '%s\n%s\n' "$SMB_PASSWORD" "$SMB_PASSWORD" | smbpasswd -a -s "$SMB_USER"; then
+        t smb_setup_failed
+        return 1
+    fi
+    smbpasswd -e "$SMB_USER" >/dev/null
+
+    # A pasta de midia ja existe (criada acima com mkdir -p, que por padrao
+    # nao da permissao de escrita pro grupo) -- sem isso, o usuario do SMB
+    # consegue LER mas nao escrever nada, mesmo sendo do grupo certo.
+    chmod -R g+w "$MEDIA_PATH" 2>/dev/null || true
+
+    if ! grep -q "^\[midia\]" /etc/samba/smb.conf 2>/dev/null; then
+        cat >> /etc/samba/smb.conf <<SMBCONF
+
+[midia]
+   path = ${MEDIA_PATH}
+   browseable = yes
+   read only = no
+   guest ok = no
+   valid users = ${SMB_USER}
+   create mask = 0664
+   directory mask = 0775
+SMBCONF
+    fi
+
+    if ! systemctl enable --now smbd >/dev/null 2>&1 || ! systemctl restart smbd; then
+        t smb_setup_failed
+        return 1
+    fi
+
+    SMB_READY="yes"
+    t smb_ready
+}
+
+setup_smb_share
 
 t generating_env
 cat > "$STACK_DIR/.env" <<EOF
@@ -463,6 +555,76 @@ if [ -n "$SONARR_KEY" ]; then
         -d "{\"settings-general-use_sonarr\": true, \"settings-sonarr-ip\": \"sonarr\", \"settings-sonarr-port\": 8989, \"settings-sonarr-apikey\": \"${SONARR_KEY}\"}" || true
 fi
 
+# =====================================================================
+# Login unificado: mesmo usuario/senha do qBittorrent em todos os apps
+# =====================================================================
+
+# Radarr, Sonarr, Prowlarr e Lidarr compartilham o mesmo backend (Servarr) e
+# o mesmo endpoint config/host -- mas o Lidarr usa API v1, nao v3 (unico
+# diferente dos outros dois .NET). O PUT exige o objeto INTEIRO (nao aceita
+# alteracao parcial), entao sempre fazemos GET, alteramos so os campos de
+# autenticacao em memoria com jq, e mandamos o objeto completo de volta.
+#
+# O codigo HTTP de sucesso varia: a documentacao desses apps diz 200, mas o
+# codigo-fonte deles devolve 202 (Accepted). Por seguranca -- mesma licao do
+# bug do HTTP 204 no qBittorrent -- aceitamos qualquer 2xx em vez de travar
+# num numero especifico.
+apply_servarr_auth() {
+    local app_name="$1" base_url="$2" api_version="$3" api_key="$4"
+    [ -z "$api_key" ] && { t skip_app_no_key; return 1; }
+
+    local current
+    current="$(curl -s -H "X-Api-Key: ${api_key}" "${base_url}/api/${api_version}/config/host")"
+    if [ -z "$current" ] || ! echo "$current" | jq -e . >/dev/null 2>&1; then
+        t unified_auth_fetch_failed
+        return 1
+    fi
+
+    local updated
+    updated="$(echo "$current" | jq \
+        --arg user "$QBT_USER" \
+        --arg pass "$QBT_PASSWORD" \
+        '.authenticationMethod = "forms" | .authenticationRequired = "enabled" | .username = $user | .password = $pass | .passwordConfirmation = $pass')"
+
+    local http_code
+    http_code=$(curl -s -o /dev/null -w "%{http_code}" -X PUT \
+        -H "X-Api-Key: ${api_key}" -H "Content-Type: application/json" \
+        -d "$updated" \
+        "${base_url}/api/${api_version}/config/host/1")
+
+    case "$http_code" in
+        2[0-9][0-9]) t unified_auth_ok ;;
+        *) t unified_auth_failed; return 1 ;;
+    esac
+}
+
+# O Bazarr nao e um app Servarr/.NET -- e Python, com seu proprio endpoint
+# de settings, que so aceita corpo form-urlencoded (nao JSON) e so processa
+# os campos que vierem no POST (update parcial de verdade, ao contrario do
+# config/host acima). O nome do tipo de autenticacao aqui e "form"
+# (singular), diferente do "forms" (plural) dos apps Servarr -- reparei
+# nisso na hora, ja que e um erro facil de copiar/colar sem querer.
+apply_bazarr_auth() {
+    local app_name="Bazarr"
+    local http_code
+    http_code=$(curl -s -o /dev/null -w "%{http_code}" -X POST "${BAZARR_URL}/api/system/settings" \
+        --data-urlencode "settings-auth-type=form" \
+        --data-urlencode "settings-auth-username=${QBT_USER}" \
+        --data-urlencode "settings-auth-password=${QBT_PASSWORD}")
+
+    case "$http_code" in
+        2[0-9][0-9]) t unified_auth_ok ;;
+        *) t unified_auth_failed; return 1 ;;
+    esac
+}
+
+t applying_unified_auth
+apply_servarr_auth "Radarr" "http://localhost:7878" "v3" "$RADARR_KEY" || true
+apply_servarr_auth "Sonarr" "http://localhost:8989" "v3" "$SONARR_KEY" || true
+apply_servarr_auth "Lidarr" "http://localhost:8686" "v1" "$LIDARR_KEY" || true
+apply_servarr_auth "Prowlarr" "http://localhost:9696" "v1" "$PROWLARR_KEY" || true
+apply_bazarr_auth || true
+
 echo ""
 echo "==================================================="
 t install_done
@@ -475,6 +637,14 @@ else
     t qbt_summary_fail2
     t qbt_summary_fail3
 fi
+if [ "$SMB_ENABLE" = "yes" ]; then
+    if [ "$SMB_READY" = "yes" ]; then
+        t smb_summary_ok
+    else
+        t smb_summary_fail
+    fi
+fi
+t unified_auth_summary
 t step2_indexers
 t step3_bazarr
 t step3_bazarr2

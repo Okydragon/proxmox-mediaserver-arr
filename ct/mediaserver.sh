@@ -67,6 +67,10 @@ t() {
             media_path_invalid) echo "Internal error: the media path came back invalid (contains a comma or a line break):\n${MEDIA_PATH}\n\nPlease re-run and type the path manually if this happens again." ;;
             qbt_password_title) echo "qBittorrent Password" ;;
             qbt_password_prompt) echo "qBittorrent WebUI password (the username will be 'admin').\nAn easy-to-type suggestion is already filled in below - accept it or replace it with your own." ;;
+            smb_title) echo "SMB Network Share" ;;
+            smb_prompt_yesno) echo "Enable an SMB (network) share for the media folder?\n\nThis lets you browse and add files from Windows/Mac/Linux over the network (e.g. \\\\<ip>\\midia on Windows), with read/write access. Optional -- you can also enable it later by re-running the install step." ;;
+            smb_user_prompt) echo "SMB username (used only for this network share -- separate from qBittorrent/Jellyfin/etc):" ;;
+            smb_password_prompt) echo "SMB password for user ${SMB_USER}.\nAn easy-to-type suggestion is already filled in below - accept it or replace it with your own." ;;
             setup_title) echo "Media Server Setup" ;;
             prompt_ct_id) echo "LXC container ID" ;;
             prompt_hostname) echo "Container hostname" ;;
@@ -93,6 +97,8 @@ t() {
             summary_qbt) echo " qBittorrent - user: admin / password: the one you set during install" ;;
             summary_qbt_note1) echo "   (the install script confirms above whether it managed to apply it automatically;" ;;
             summary_qbt_note2) echo "   if not, run: docker logs qbittorrent | grep -i password)" ;;
+            summary_smb) echo " SMB share - user: ${SMB_USER} / password: the one you set during install" ;;
+            summary_unified_auth) echo " Radarr/Sonarr/Lidarr/Prowlarr/Bazarr now require login too, using the SAME user/password as qBittorrent above (the install script confirms above whether it managed to apply it to each app automatically)." ;;
             summary_next_steps) echo " Manual next step: register your private indexers in Prowlarr." ;;
         esac
     else
@@ -121,6 +127,10 @@ t() {
             media_path_invalid) echo "Erro interno: o caminho de mídia voltou inválido (contém vírgula ou quebra de linha):\n${MEDIA_PATH}\n\nSe isso acontecer de novo, execute novamente e digite o caminho manualmente." ;;
             qbt_password_title) echo "Senha do qBittorrent" ;;
             qbt_password_prompt) echo "Senha da WebUI do qBittorrent (usuário será 'admin').\nJá vem uma sugestão fácil de digitar preenchida abaixo - aceite ou troque pela sua." ;;
+            smb_title) echo "Compartilhamento SMB" ;;
+            smb_prompt_yesno) echo "Ativar um compartilhamento SMB (de rede) para a pasta de mídia?\n\nIsso permite navegar e adicionar arquivos pelo Windows/Mac/Linux via rede (ex: \\\\<ip>\\midia no Windows), com acesso de leitura e escrita. Opcional -- você também pode ativar depois rodando a etapa de instalação de novo." ;;
+            smb_user_prompt) echo "Usuário do SMB (usado só para esse compartilhamento de rede -- separado do qBittorrent/Jellyfin/etc):" ;;
+            smb_password_prompt) echo "Senha do SMB para o usuário ${SMB_USER}.\nJá vem uma sugestão fácil de digitar preenchida abaixo - aceite ou troque pela sua." ;;
             setup_title) echo "Media Server Setup" ;;
             prompt_ct_id) echo "ID do container LXC" ;;
             prompt_hostname) echo "Hostname do container" ;;
@@ -147,6 +157,8 @@ t() {
             summary_qbt) echo " qBittorrent - usuário: admin / senha: a que você definiu na instalação" ;;
             summary_qbt_note1) echo "   (o install script confirma acima se conseguiu aplicá-la automaticamente;" ;;
             summary_qbt_note2) echo "   se não conseguiu, rode: docker logs qbittorrent | grep -i password)" ;;
+            summary_smb) echo " Compartilhamento SMB - usuário: ${SMB_USER} / senha: a que você definiu na instalação" ;;
+            summary_unified_auth) echo " Radarr/Sonarr/Lidarr/Prowlarr/Bazarr agora também exigem login, usando o MESMO usuário/senha do qBittorrent acima (o install script confirma acima se conseguiu aplicar em cada app automaticamente)." ;;
             summary_next_steps) echo " Próximos passos manuais: cadastro dos seus indexers privados no Prowlarr." ;;
         esac
     fi
@@ -533,6 +545,31 @@ select_qbt_password() {
     fi
 }
 
+# Compartilhamento SMB e opcional -- por padrao (--defaultno) o usuario
+# precisa mover o foco de proposito pra "Sim" em vez de so apertar Enter.
+select_smb_config() {
+    SMB_ENABLE="no"
+    SMB_USER=""
+    SMB_PASSWORD=""
+
+    if ! whiptail --yesno "$(t smb_prompt_yesno)" 14 78 --defaultno --title "$(t smb_title)"; then
+        return
+    fi
+    SMB_ENABLE="yes"
+
+    SMB_USER=$(whiptail --inputbox "$(t smb_user_prompt)" 9 70 "midia" --title "$(t smb_title)" 3>&1 1>&2 2>&3)
+    if [ -z "$SMB_USER" ]; then
+        SMB_USER="midia"
+    fi
+
+    local suggestion
+    suggestion="$(generate_memorable_password)"
+    SMB_PASSWORD=$(whiptail --inputbox "$(t smb_password_prompt)" 11 74 "$suggestion" --title "$(t smb_title)" 3>&1 1>&2 2>&3)
+    if [ -z "$SMB_PASSWORD" ]; then
+        SMB_PASSWORD="$suggestion"
+    fi
+}
+
 # ---------- Prompts interativos ----------
 CT_ID=$(whiptail --inputbox "$(t prompt_ct_id)" 8 60 "$CT_ID_DEFAULT" --title "$(t setup_title)" 3>&1 1>&2 2>&3)
 CT_HOSTNAME=$(whiptail --inputbox "$(t prompt_hostname)" 8 60 "$CT_HOSTNAME_DEFAULT" --title "$(t setup_title)" 3>&1 1>&2 2>&3)
@@ -546,6 +583,8 @@ select_debian_template
 select_media_path
 
 select_qbt_password
+
+select_smb_config
 
 if whiptail --yesno "$(t gpu_prompt)" 10 60 --title "$(t gpu_title)"; then
     USE_GPU="yes"
@@ -702,6 +741,9 @@ pct exec "$CT_ID" -- env \
     PGID="$PGID_DEFAULT" \
     TZ="$TZ_DEFAULT" \
     QBT_PASSWORD="$QBT_PASSWORD" \
+    SMB_ENABLE="$SMB_ENABLE" \
+    SMB_USER="$SMB_USER" \
+    SMB_PASSWORD="$SMB_PASSWORD" \
     LANG_CHOICE="$LANG_CHOICE" \
     /root/mediaserver-install.sh
 
@@ -717,9 +759,17 @@ echo " Radarr:     http://${CT_IP}:7878"
 echo " Sonarr:     http://${CT_IP}:8989"
 echo " Lidarr:     http://${CT_IP}:8686"
 echo " Bazarr:     http://${CT_IP}:6767"
+if [ "$SMB_ENABLE" = "yes" ]; then
+    # shellcheck disable=SC2028 # backslashes literais de proposito (caminho UNC do Windows); bash echo (sem xpg_echo) nao expande escapes
+    echo " SMB:        \\\\${CT_IP}\\midia"
+fi
 echo "==================================================="
 t summary_qbt
 t summary_qbt_note1
 t summary_qbt_note2
+if [ "$SMB_ENABLE" = "yes" ]; then
+    t summary_smb
+fi
+t summary_unified_auth
 t summary_next_steps
 echo "==================================================="
