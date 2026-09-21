@@ -55,8 +55,11 @@ t() {
             media_manual_short) echo "ABSOLUTE path on the HOST where the media is/will be (e.g. /mnt/midia)" ;;
             media_storage_title) echo "Media Storage" ;;
             media_menu_item_manual) echo "Type a path manually" ;;
-            media_menu_prompt) echo "Disks/partitions already mounted on the node (Ceph and the boot disk were already excluded).\nChoose where the media will live:" ;;
+            media_menu_prompt) echo "Disks/partitions found on the node (Ceph and the boot disk were already excluded). Unmounted disks that already have a filesystem can also be selected -- they will be mounted by UUID.\nChoose where the media will live:" ;;
             media_subpath_prompt) echo "Media path inside ${mnt}\n(use the mount point itself, or a subdirectory of it)" ;;
+            media_unmounted_label) echo "not mounted" ;;
+            media_mount_point_prompt) echo "This disk (UUID ${uuid}) is not mounted yet.\nWhere do you want to mount it? (created if it doesn't exist; it will be added to /etc/fstab by UUID, not by device name, so it keeps working even if the disk order changes)" ;;
+            media_mount_fail) echo "Failed to mount the disk. Check the messages above and try again." ;;
             qbt_password_title) echo "qBittorrent Password" ;;
             qbt_password_prompt) echo "qBittorrent WebUI password (the username will be 'admin').\nAn easy-to-type suggestion is already filled in below - accept it or replace it with your own." ;;
             setup_title) echo "Media Server Setup" ;;
@@ -101,8 +104,11 @@ t() {
             media_manual_short) echo "Caminho ABSOLUTO no HOST onde a mídia está/ficará (ex: /mnt/midia)" ;;
             media_storage_title) echo "Storage de Mídia" ;;
             media_menu_item_manual) echo "Digitar um caminho manualmente" ;;
-            media_menu_prompt) echo "Discos/partições já montados no node (Ceph e o disco de boot já foram excluídos).\nEscolha onde a mídia vai ficar:" ;;
+            media_menu_prompt) echo "Discos/partições encontrados no node (Ceph e o disco de boot já foram excluídos). Discos não montados que já têm sistema de arquivos também podem ser escolhidos -- serão montados pelo UUID.\nEscolha onde a mídia vai ficar:" ;;
             media_subpath_prompt) echo "Caminho da mídia dentro de ${mnt}\n(use o próprio ponto de montagem, ou um subdiretório dele)" ;;
+            media_unmounted_label) echo "não montado" ;;
+            media_mount_point_prompt) echo "Este disco (UUID ${uuid}) ainda não está montado.\nOnde deseja montá-lo? (será criado se não existir; será adicionado ao /etc/fstab pelo UUID, não pelo nome do dispositivo, então continua funcionando mesmo se a ordem dos discos mudar)" ;;
+            media_mount_fail) echo "Não consegui montar o disco. Confira as mensagens acima e tente de novo." ;;
             qbt_password_title) echo "Senha do qBittorrent" ;;
             qbt_password_prompt) echo "Senha da WebUI do qBittorrent (usuário será 'admin').\nJá vem uma sugestão fácil de digitar preenchida abaixo - aceite ou troque pela sua." ;;
             setup_title) echo "Media Server Setup" ;;
@@ -229,12 +235,17 @@ select_debian_template() {
 }
 
 # ---------- Detecção de discos de mídia ----------
-# Lista discos/partições JÁ MONTADOS no host, excluindo automaticamente:
+# Lista discos/partições candidatos a guardar a mídia, excluindo automaticamente:
 #   - o disco de boot/rootfs do próprio Proxmox
 #   - qualquer coisa usada pelo Ceph (OSDs bluestore "crus" ou VGs criados
 #     pelo ceph-volume, que seguem o padrão de nome "ceph-<uuid>")
 #   - VGs usados por storages LVM/LVM-thin do Proxmox (ex: local-lvm, onde
 #     fica o rootfs dos containers)
+# Inclui tanto discos JA MONTADOS quanto discos SEM ponto de montagem mas que
+# JA TEM um sistema de arquivos reconhecido (esses serao montados por UUID em
+# select_media_path(), se escolhidos). Discos totalmente "crus" (sem sistema
+# de arquivos) ainda nao sao suportados aqui -- precisariam ser formatados,
+# o que fica para uma etapa futura, ja que formatar e destrutivo.
 # Não formata nada automaticamente — só lista o que já está pronto para uso.
 # Ajuste os filtros abaixo se o layout de disco/Ceph do seu cluster for
 # diferente do padrão (ex: Ceph em modo "simple" sem LVM).
@@ -266,11 +277,22 @@ detect_media_candidates() {
     while IFS= read -r line; do
         eval "$line"
 
-        [ -z "${MOUNTPOINT:-}" ] && continue
-        case "$MOUNTPOINT" in
+        # Sem ponto de montagem E sem sistema de arquivos reconhecido -> disco
+        # "cru". Ainda nao suportado aqui (precisaria formatar), entao pulamos.
+        if [ -z "${MOUNTPOINT:-}" ] && [ -z "${FSTYPE:-}" ]; then
+            continue
+        fi
+
+        case "${MOUNTPOINT:-}" in
             /|/boot|/boot/*|/etc/pve*|/var/lib/vz) continue ;;
         esac
-        [ "${FSTYPE:-}" = "ceph_bluestore" ] && continue
+
+        # FSTYPEs que NAO sao sistemas de arquivos montaveis diretamente (sao
+        # "assinaturas" de outra coisa por cima do disco) -- nunca oferecer
+        # como candidato, montado ou nao.
+        case "${FSTYPE:-}" in
+            ceph_bluestore|LVM2_member|crypto_LUKS) continue ;;
+        esac
 
         local disk_base="${PKNAME:-$NAME}"
         if [ -n "$root_disk" ] && [ "$disk_base" = "$root_disk" ]; then
@@ -291,8 +313,42 @@ detect_media_candidates() {
             fi
         fi
 
-        MEDIA_CANDIDATES+=("/dev/${NAME}|${MOUNTPOINT}|${SIZE:-?}|${FSTYPE:-?}")
-    done < <(lsblk -P -o NAME,MOUNTPOINT,FSTYPE,SIZE,PKNAME,TYPE)
+        MEDIA_CANDIDATES+=("/dev/${NAME}|${MOUNTPOINT:-}|${SIZE:-?}|${FSTYPE:-?}|${UUID:-}")
+    done < <(lsblk -P -o NAME,MOUNTPOINT,FSTYPE,SIZE,PKNAME,TYPE,UUID)
+}
+
+# Monta (por UUID, nunca por /dev/sdX) um disco candidato que ainda nao tem
+# ponto de montagem, e persiste a entrada em /etc/fstab -- assim o disco
+# continua sendo encontrado corretamente mesmo se a letra dele mudar (ex:
+# depois de adicionar/remover outro disco do host).
+mount_unmounted_disk() {
+    local dev="$1" fstype="$2" uuid="$3"
+
+    if [ -z "$uuid" ]; then
+        # Sem UUID nao da pra montar de forma estavel; melhor falhar alto do
+        # que arriscar gravar uma entrada de fstab que aponte pro lugar errado.
+        # (mandamos pro stderr -- esta funcao "retorna" o mountpoint via stdout
+        # para quem a chamar com $(...), entao stdout precisa ficar limpo)
+        t media_mount_fail >&2
+        return 1
+    fi
+
+    local new_mount
+    new_mount=$(whiptail --inputbox "$(t media_mount_point_prompt)" 11 74 "$MEDIA_PATH_DEFAULT" --title "$(t media_storage_title)" 3>&1 1>&2 2>&3)
+    [ -z "$new_mount" ] && new_mount="$MEDIA_PATH_DEFAULT"
+
+    mkdir -p "$new_mount"
+
+    if ! grep -q "^UUID=${uuid}[[:space:]]" /etc/fstab 2>/dev/null; then
+        echo "UUID=${uuid} ${new_mount} ${fstype} defaults,nofail 0 2" >> /etc/fstab
+    fi
+
+    if ! mount "$new_mount"; then
+        t media_mount_fail >&2
+        return 1
+    fi
+
+    echo "$new_mount"
 }
 
 # Monta o menu de seleção (ou cai para digitação manual) e define $MEDIA_PATH
@@ -308,8 +364,10 @@ select_media_path() {
     local menu_args=()
     local i=0
     for entry in "${MEDIA_CANDIDATES[@]}"; do
-        IFS='|' read -r dev mnt size fstype <<< "$entry"
-        menu_args+=("$i" "$mnt  (${size}, ${fstype}, ${dev})")
+        IFS='|' read -r dev mnt size fstype uuid <<< "$entry"
+        local label="$mnt"
+        [ -z "$label" ] && label="[$(t media_unmounted_label)]"
+        menu_args+=("$i" "$label  (${size}, ${fstype}, ${dev})")
         i=$((i+1))
     done
     menu_args+=("MANUAL" "$(t media_menu_item_manual)")
@@ -320,7 +378,10 @@ select_media_path() {
     if [ "$choice" = "MANUAL" ] || [ -z "$choice" ]; then
         MEDIA_PATH=$(whiptail --inputbox "$(t media_manual_short)" 10 70 "$MEDIA_PATH_DEFAULT" --title "$(t media_storage_title)" 3>&1 1>&2 2>&3)
     else
-        IFS='|' read -r dev mnt size fstype <<< "${MEDIA_CANDIDATES[$choice]}"
+        IFS='|' read -r dev mnt size fstype uuid <<< "${MEDIA_CANDIDATES[$choice]}"
+        if [ -z "$mnt" ]; then
+            mnt="$(mount_unmounted_disk "$dev" "$fstype" "$uuid")"
+        fi
         MEDIA_PATH=$(whiptail --inputbox "$(t media_subpath_prompt)" 10 70 "$mnt" --title "$(t media_storage_title)" 3>&1 1>&2 2>&3)
     fi
 }
