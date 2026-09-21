@@ -262,7 +262,12 @@ detect_media_candidates() {
 
         if [ "${TYPE:-}" = "lvm" ]; then
             local vg
-            vg="$(lvs --noheadings -o vg_name "/dev/$NAME" 2>/dev/null | awk '{$1=$1};1')"
+            if ! vg="$(lvs --noheadings -o vg_name "/dev/$NAME" 2>/dev/null | awk '{$1=$1};1')"; then
+                # Nao foi possivel determinar o VG deste LV (lvs falhou por algum
+                # motivo especifico do ambiente). Por seguranca, pulamos esse
+                # candidato em vez de arriscar expor um VG do Ceph sem querer.
+                continue
+            fi
             if [ -n "$vg" ]; then
                 if echo "$ceph_vgs" | grep -qxF "$vg"; then continue; fi
                 if echo "$pve_vgs" | grep -qxF "$vg"; then continue; fi
