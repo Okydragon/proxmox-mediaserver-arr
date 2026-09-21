@@ -74,6 +74,12 @@ t() {
             connecting_qbt_all) echo ">> Connecting qBittorrent to the *arr apps..." ;;
             registering_prowlarr_app) echo "  - Registering $app_name as an Application in Prowlarr..." ;;
             syncing_prowlarr) echo ">> Syncing Prowlarr with the *arr apps (Applications)..." ;;
+            waiting_app_ready) echo "  - Waiting for $app_name's API to be ready..." ;;
+            app_not_ready_skip) echo "  - WARNING: $app_name's API did not respond in time; skipping this integration (configure it manually if needed)." ;;
+            qbt_api_not_ready_warning) echo "  - WARNING: qBittorrent's API did not respond in time; the download client registration below may fail." ;;
+            prowlarr_not_ready_warning) echo "  - WARNING: Prowlarr's API did not respond in time; the steps below may fail." ;;
+            registering_flaresolverr) echo "  - Registering FlareSolverr as an Indexer Proxy in Prowlarr..." ;;
+            skip_flaresolverr_no_key) echo "  - Skipping FlareSolverr registration in Prowlarr (no API key)" ;;
             trying_bazarr) echo ">> Trying to connect Bazarr to Radarr/Sonarr (best-effort, check manually if it fails)..." ;;
             install_done) echo " Installation complete." ;;
             important) echo " IMPORTANT:" ;;
@@ -85,6 +91,7 @@ t() {
             smb_summary_ok) echo "    SMB share - user: ${SMB_USER} / password: the one you set during install" ;;
             smb_summary_fail) echo "    WARNING: could not fully set up the SMB share automatically. Check manually: systemctl status smbd" ;;
             unified_auth_summary) echo "    Radarr/Sonarr/Lidarr/Prowlarr/Bazarr now also require login, using the SAME user/password as qBittorrent above (check the warnings above if any app didn't apply it automatically)." ;;
+            flaresolverr_summary) echo "    FlareSolverr was registered in Prowlarr as an Indexer Proxy (Settings > Indexer Proxies), currently untagged. To use it on an indexer that needs Cloudflare-challenge bypass, add a tag to both that indexer and the FlareSolverr proxy in Prowlarr's UI." ;;
             step2_indexers) echo " 2) Register your private indexers manually in Prowlarr." ;;
             step3_bazarr) echo " 3) Check the Bazarr<->Radarr/Sonarr connection in Settings - the Bazarr API" ;;
             step3_bazarr2) echo "    schema changes between versions and may need manual adjustment." ;;
@@ -122,6 +129,12 @@ t() {
             connecting_qbt_all) echo ">> Conectando qBittorrent aos apps *arr..." ;;
             registering_prowlarr_app) echo "  - Registrando $app_name como Application no Prowlarr..." ;;
             syncing_prowlarr) echo ">> Sincronizando Prowlarr com os apps *arr (Applications)..." ;;
+            waiting_app_ready) echo "  - Aguardando a API do $app_name ficar pronta..." ;;
+            app_not_ready_skip) echo "  - AVISO: a API do $app_name não respondeu a tempo; pulando esta integração (configure manualmente se necessário)." ;;
+            qbt_api_not_ready_warning) echo "  - AVISO: a API do qBittorrent não respondeu a tempo; o cadastro do download client abaixo pode falhar." ;;
+            prowlarr_not_ready_warning) echo "  - AVISO: a API do Prowlarr não respondeu a tempo; os passos abaixo podem falhar." ;;
+            registering_flaresolverr) echo "  - Registrando o FlareSolverr como Indexer Proxy no Prowlarr..." ;;
+            skip_flaresolverr_no_key) echo "  - Pulando o registro do FlareSolverr no Prowlarr (sem API key)" ;;
             trying_bazarr) echo ">> Tentando conectar Bazarr ao Radarr/Sonarr (best-effort, confira manualmente se falhar)..." ;;
             install_done) echo " Instalação concluída." ;;
             important) echo " IMPORTANTE:" ;;
@@ -133,6 +146,7 @@ t() {
             smb_summary_ok) echo "    Compartilhamento SMB - usuário: ${SMB_USER} / senha: a que você definiu na instalação" ;;
             smb_summary_fail) echo "    AVISO: não consegui configurar o compartilhamento SMB por completo. Confira manualmente: systemctl status smbd" ;;
             unified_auth_summary) echo "    Radarr/Sonarr/Lidarr/Prowlarr/Bazarr agora também exigem login, usando o MESMO usuário/senha do qBittorrent acima (confira os avisos acima caso algum app não tenha aplicado automaticamente)." ;;
+            flaresolverr_summary) echo "    O FlareSolverr foi registrado no Prowlarr como Indexer Proxy (Settings > Indexer Proxies), hoje sem nenhuma tag. Para usá-lo num indexer que precise contornar desafio do Cloudflare, adicione uma tag nesse indexer e a mesma tag no proxy do FlareSolverr, na interface do Prowlarr." ;;
             step2_indexers) echo " 2) Cadastre seus indexers privados manualmente no Prowlarr." ;;
             step3_bazarr) echo " 3) Confira a conexão Bazarr<->Radarr/Sonarr em Settings - o schema da API" ;;
             step3_bazarr2) echo "    do Bazarr muda entre versões e pode precisar de ajuste manual." ;;
@@ -388,6 +402,38 @@ wait_for_apikey() {
     grep -oP '(?<=<ApiKey>)[^<]+' "$config_file"
 }
 
+# O <ApiKey> aparece no config.xml bem cedo no boot do app -- ANTES do
+# servidor HTTP (Kestrel) estar de fato escutando. Usar só o arquivo como
+# sinal de "pronto" causa falha de conexão (HTTP 000) nas chamadas de API
+# seguintes (foi exatamente isso que causou o download client não ser
+# cadastrado no teste real). Aqui esperamos a API responder de verdade,
+# com a própria API key, antes de prosseguir.
+wait_for_api_ready() {
+    local port="$1" api_key="$2" api_version="$3"
+    local timeout=120 waited=0 code
+    while [ "$waited" -lt "$timeout" ]; do
+        code=$(curl -s -o /dev/null -w "%{http_code}" -H "X-Api-Key: ${api_key}" \
+            "http://localhost:${port}/api/${api_version}/system/status" 2>/dev/null || true)
+        [ "$code" = "200" ] && return 0
+        sleep 3
+        waited=$((waited+3))
+    done
+    return 1
+}
+
+# Mesma lógica acima, mas para o qBittorrent (não usa X-Api-Key -- esse
+# endpoint é público e só devolve a versão da WebAPI em texto puro).
+wait_for_qbt_api() {
+    local timeout=60 waited=0 code
+    while [ "$waited" -lt "$timeout" ]; do
+        code=$(curl -s -o /dev/null -w "%{http_code}" "http://localhost:8080/api/v2/app/webapiVersion" 2>/dev/null || true)
+        [ "$code" = "200" ] && return 0
+        sleep 3
+        waited=$((waited+3))
+    done
+    return 1
+}
+
 # O qBittorrent (a partir da 4.6.1) gera uma senha TEMPORÁRIA aleatória no
 # primeiro boot e só mostra ela no log do processo — não dá pra prever, então
 # esperamos ela aparecer para depois trocar pela senha definitiva via API.
@@ -481,15 +527,33 @@ LIDARR_KEY=$(wait_for_apikey "$STACK_DIR/lidarr/config/config.xml") || LIDARR_KE
 PROWLARR_KEY=$(wait_for_apikey "$STACK_DIR/prowlarr/config/config.xml") || PROWLARR_KEY=""
 
 add_download_client() {
-    local app_name="$1" port="$2" api_key="$3" category="$4"
+    local app_name="$1" api_version="$2" port="$3" api_key="$4" category="$5"
     [ -z "$api_key" ] && { t skip_app_no_key; return; }
 
     if [ "$QBT_PASSWORD_SET" != "yes" ]; then
         t qbt_not_confirmed_warning
     fi
 
+    t waiting_app_ready
+    if ! wait_for_api_ready "$port" "$api_key" "$api_version"; then
+        t app_not_ready_skip
+        return 1
+    fi
+
+    # O nome do campo de categoria muda por app (confirmado no código-fonte
+    # de cada um: QBittorrentSettings.cs). Mandar "category" (nome antigo,
+    # errado) é silenciosamente ignorado pelo deserializer -- não dá erro,
+    # só nunca aplica a categoria de verdade.
+    local category_field
+    case "$app_name" in
+        Radarr) category_field="movieCategory" ;;
+        Sonarr) category_field="tvCategory" ;;
+        Lidarr) category_field="musicCategory" ;;
+        *) category_field="category" ;;
+    esac
+
     t connecting_qbt_app
-    curl -s -o /dev/null -w "    HTTP %{http_code}\n" -X POST "http://localhost:${port}/api/v3/downloadclient" \
+    curl -s -o /dev/null -w "    HTTP %{http_code}\n" -X POST "http://localhost:${port}/api/${api_version}/downloadclient" \
         -H "X-Api-Key: ${api_key}" -H "Content-Type: application/json" \
         -d "{
             \"enable\": true,
@@ -501,16 +565,37 @@ add_download_client() {
             \"fields\": [
                 {\"name\":\"host\",\"value\":\"qbittorrent\"},
                 {\"name\":\"port\",\"value\":8080},
+                {\"name\":\"useSsl\",\"value\":false},
                 {\"name\":\"username\",\"value\":\"${QBT_USER}\"},
                 {\"name\":\"password\",\"value\":\"${QBT_PASSWORD}\"},
-                {\"name\":\"category\",\"value\":\"${category}\"}
+                {\"name\":\"${category_field}\",\"value\":\"${category}\"}
             ]
         }" || true
 }
 
 add_prowlarr_app() {
-    local app_name="$1" impl="$2" contract="$3" port="$4" api_key="$5"
+    local app_name="$1" impl="$2" contract="$3" port="$4" api_key="$5" api_version="$6" sync_categories="$7"
     [ -z "$api_key" ] || [ -z "$PROWLARR_KEY" ] && { t skip_app_no_key_prowlarr; return; }
+
+    # O Prowlarr testa a conexão com o app de verdade (uma chamada HTTP real
+    # pra baseUrl) antes de salvar o Application -- se o app ainda não
+    # estiver com a API de pé nesse instante, o cadastro inteiro falha com
+    # HTTP 400 (e "forceSave" não ajuda aqui, só ignora avisos, não falhas
+    # de conexão de verdade). Por isso esperamos o app alvo responder antes.
+    t waiting_app_ready
+    if ! wait_for_api_ready "$port" "$api_key" "$api_version"; then
+        t app_not_ready_skip
+        return 1
+    fi
+
+    # syncCategories é obrigatório pro Radarr (o Prowlarr rejeita com 400 se
+    # vier vazio); Sonarr/Lidarr não exigem, mas mandamos mesmo assim pra
+    # sincronização de categorias funcionar de verdade. O Sonarr também tem
+    # um campo extra de categorias de anime.
+    local extra_fields=""
+    if [ "$app_name" = "Sonarr" ]; then
+        extra_fields=",{\"name\":\"animeSyncCategories\",\"value\":[5070]}"
+    fi
 
     t registering_prowlarr_app
     curl -s -o /dev/null -w "    HTTP %{http_code}\n" -X POST "http://localhost:9696/api/v1/applications" \
@@ -523,21 +608,51 @@ add_prowlarr_app() {
             \"fields\": [
                 {\"name\":\"apiKey\",\"value\":\"${api_key}\"},
                 {\"name\":\"baseUrl\",\"value\":\"http://${app_name,,}:${port}\"},
-                {\"name\":\"prowlarrUrl\",\"value\":\"http://prowlarr:9696\"}
+                {\"name\":\"prowlarrUrl\",\"value\":\"http://prowlarr:9696\"},
+                {\"name\":\"syncCategories\",\"value\":${sync_categories}}${extra_fields}
             ],
             \"tags\": []
         }" || true
 }
 
+# Cadastra o FlareSolverr (já sobe junto na stack) como Indexer Proxy no
+# Prowlarr, pra indexers que dependem de contornar desafio do Cloudflare
+# poderem usá-lo. Vai com "tags": [] de propósito: se vier tag preenchida
+# aqui, o Prowlarr testa a conexão com o FlareSolverr de forma síncrona
+# antes de salvar, e se ele ainda não estiver pronto o cadastro inteiro
+# falha (400) e nada é salvo. Com tags vazio esse teste não roda -- o proxy
+# fica salvo sem testar, e o usuário decide depois, na própria interface do
+# Prowlarr, quais indexers devem usá-lo (adicionando uma tag em comum).
+add_flaresolverr_proxy() {
+    [ -z "$PROWLARR_KEY" ] && { t skip_flaresolverr_no_key; return; }
+
+    t registering_flaresolverr
+    curl -s -o /dev/null -w "    HTTP %{http_code}\n" -X POST "http://localhost:9696/api/v1/indexerproxy" \
+        -H "X-Api-Key: ${PROWLARR_KEY}" -H "Content-Type: application/json" \
+        -d '{
+            "name": "FlareSolverr",
+            "implementation": "FlareSolverr",
+            "configContract": "FlareSolverrSettings",
+            "fields": [
+                {"name":"host","value":"http://flaresolverr:8191/"},
+                {"name":"requestTimeout","value":60}
+            ],
+            "tags": []
+        }' || true
+}
+
 t connecting_qbt_all
-add_download_client "Radarr" 7878 "$RADARR_KEY" "radarr"
-add_download_client "Sonarr" 8989 "$SONARR_KEY" "sonarr"
-add_download_client "Lidarr" 8686 "$LIDARR_KEY" "lidarr"
+wait_for_qbt_api || t qbt_api_not_ready_warning
+add_download_client "Radarr" "v3" 7878 "$RADARR_KEY" "radarr" || true
+add_download_client "Sonarr" "v3" 8989 "$SONARR_KEY" "sonarr" || true
+add_download_client "Lidarr" "v1" 8686 "$LIDARR_KEY" "lidarr" || true
 
 t syncing_prowlarr
-add_prowlarr_app "Radarr" "Radarr" "RadarrSettings" 7878 "$RADARR_KEY"
-add_prowlarr_app "Sonarr" "Sonarr" "SonarrSettings" 8989 "$SONARR_KEY"
-add_prowlarr_app "Lidarr" "Lidarr" "LidarrSettings" 8686 "$LIDARR_KEY"
+wait_for_api_ready 9696 "$PROWLARR_KEY" "v1" || t prowlarr_not_ready_warning
+add_prowlarr_app "Radarr" "Radarr" "RadarrSettings" 7878 "$RADARR_KEY" "v3" "[2000,2010,2020,2030,2040,2045,2050,2060,2070,2080,2090]" || true
+add_prowlarr_app "Sonarr" "Sonarr" "SonarrSettings" 8989 "$SONARR_KEY" "v3" "[5000,5010,5020,5030,5040,5045,5050,5090]" || true
+add_prowlarr_app "Lidarr" "Lidarr" "LidarrSettings" 8686 "$LIDARR_KEY" "v1" "[3000,3010,3030,3040,3050,3060]" || true
+add_flaresolverr_proxy || true
 
 # --- Bazarr -> Radarr/Sonarr ---
 # OBS: o schema exato da API do Bazarr muda entre versões. Este bloco é best-effort;
@@ -645,6 +760,7 @@ if [ "$SMB_ENABLE" = "yes" ]; then
     fi
 fi
 t unified_auth_summary
+t flaresolverr_summary
 t step2_indexers
 t step3_bazarr
 t step3_bazarr2
