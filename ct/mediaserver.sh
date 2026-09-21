@@ -64,6 +64,7 @@ t() {
             media_format_title) echo "Format Disk (DESTRUCTIVE)" ;;
             media_format_confirm) echo "WARNING: this will PERMANENTLY ERASE everything on ${dev} (${size}).\nThis action CANNOT be undone.\n\nAre you sure you want to format this disk as ext4?" ;;
             media_formatting) echo "Formatting ${dev} as ext4..." ;;
+            media_path_invalid) echo "Internal error: the media path came back invalid (contains a comma or a line break):\n${MEDIA_PATH}\n\nPlease re-run and type the path manually if this happens again." ;;
             qbt_password_title) echo "qBittorrent Password" ;;
             qbt_password_prompt) echo "qBittorrent WebUI password (the username will be 'admin').\nAn easy-to-type suggestion is already filled in below - accept it or replace it with your own." ;;
             setup_title) echo "Media Server Setup" ;;
@@ -117,6 +118,7 @@ t() {
             media_format_title) echo "Formatar Disco (DESTRUTIVO)" ;;
             media_format_confirm) echo "ATENÇÃO: isso vai APAGAR PERMANENTEMENTE tudo em ${dev} (${size}).\nEsta ação NÃO PODE ser desfeita.\n\nTem certeza que deseja formatar este disco como ext4?" ;;
             media_formatting) echo "Formatando ${dev} como ext4..." ;;
+            media_path_invalid) echo "Erro interno: o caminho de mídia voltou inválido (contém vírgula ou quebra de linha):\n${MEDIA_PATH}\n\nSe isso acontecer de novo, execute novamente e digite o caminho manualmente." ;;
             qbt_password_title) echo "Senha do qBittorrent" ;;
             qbt_password_prompt) echo "Senha da WebUI do qBittorrent (usuário será 'admin').\nJá vem uma sugestão fácil de digitar preenchida abaixo - aceite ou troque pela sua." ;;
             setup_title) echo "Media Server Setup" ;;
@@ -382,13 +384,20 @@ mount_unmounted_disk() {
     new_mount=$(whiptail --inputbox "$(t media_mount_point_prompt)" 11 74 "$MEDIA_PATH_DEFAULT" --title "$(t media_storage_title)" 3>&1 1>&2 2>&3)
     [ -z "$new_mount" ] && new_mount="$MEDIA_PATH_DEFAULT"
 
-    mkdir -p "$new_mount"
+    mkdir -p "$new_mount" >/dev/null
 
     if ! grep -q "^UUID=${uuid}[[:space:]]" /etc/fstab 2>/dev/null; then
         echo "UUID=${uuid} ${new_mount} ${fstype} defaults,nofail 0 2" >> /etc/fstab
     fi
 
-    if ! mount "$new_mount"; then
+    # IMPORTANTE: redireciona a saida do mount pra /dev/null. O comando
+    # "mount" pode imprimir avisos informativos do proprio sistema no stdout
+    # (ex: "your fstab has been modified, but systemd still uses the old
+    # version..."), e como esta funcao "retorna" o mountpoint via stdout para
+    # quem a chamar com $(...), qualquer texto extra aqui contamina o valor
+    # capturado (isso ja causou $MEDIA_PATH virar uma string multi-linha com
+    # virgula dentro, quebrando o "pct set -mp0" mais adiante).
+    if ! mount "$new_mount" >/dev/null; then
         t media_mount_fail >&2
         return 1
     fi
@@ -408,8 +417,15 @@ format_and_mount_disk() {
         return 1
     fi
 
-    t media_formatting
-    mkfs.ext4 -F -L midia "$dev"
+    # IMPORTANTE (mesmo motivo do mount_unmounted_disk() acima): esta funcao
+    # "retorna" o mountpoint via stdout pra quem a chamar com $(...). Mandamos
+    # a mensagem de status pro stderr e a saida do mkfs pro /dev/null, senao
+    # o banner do mke2fs contaminaria o caminho de montagem capturado.
+    t media_formatting >&2
+    if ! mkfs.ext4 -F -L midia "$dev" >/dev/null; then
+        t media_mount_fail >&2
+        return 1
+    fi
 
     local uuid
     uuid="$(blkid -s UUID -o value "$dev" 2>/dev/null || true)"
@@ -560,6 +576,18 @@ if whiptail --yesno "$(t net_prompt_yesno)" 14 78 --title "$(t net_title)"; then
 fi
 
 # ---------- Validações ----------
+# Trava de seguranca extra: MEDIA_PATH vira parte de uma lista separada por
+# virgula no "pct set -mp0" mais abaixo. Se por qualquer motivo ele vier com
+# virgula ou quebra de linha (ja aconteceu por causa de uma mensagem do
+# proprio "mount" vazando pra dentro da variavel -- ver mount_unmounted_disk),
+# e melhor abortar com uma mensagem clara do que gerar um "pct set" quebrado.
+case "$MEDIA_PATH" in
+    *,*|*$'\n'*)
+        t media_path_invalid >&2
+        exit 1
+        ;;
+esac
+
 if [ ! -d "$MEDIA_PATH" ]; then
     if whiptail --yesno "$(t media_dir_missing_prompt)" 8 60; then
         mkdir -p "$MEDIA_PATH"
