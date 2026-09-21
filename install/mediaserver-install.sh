@@ -478,9 +478,18 @@ apply_qbt_password() {
         return 1
     fi
 
+    # Alem da senha, ja aproveitamos essa mesma chamada pra corrigir o
+    # "save_path" padrao do qBittorrent. A imagem linuxserver/qbittorrent
+    # vem com o padrao "/downloads" de fabrica, mas esse caminho nao existe
+    # dentro de NENHUM container daqui -- todos (qbittorrent, radarr, sonarr,
+    # lidarr) montam o mesmo volume de midia como "/data" (ver
+    # docker-compose.yml). Sem isso, Radarr/Sonarr/Lidarr acusam no health
+    # check que a pasta de download do qBittorrent "nao existe dentro do
+    # container" -- porque, do ponto de vista deles, "/downloads" realmente
+    # nao existe (so existe "/data").
     local setpref_http
     setpref_http=$(curl -s -o /dev/null -w "%{http_code}" -b "$cookie_jar" \
-        --data-urlencode "json={\"web_ui_password\":\"${QBT_PASSWORD}\"}" \
+        --data-urlencode "json={\"web_ui_password\":\"${QBT_PASSWORD}\",\"save_path\":\"/data/downloads\"}" \
         "http://localhost:8080/api/v2/app/setPreferences")
     rm -f "$cookie_jar"
 
