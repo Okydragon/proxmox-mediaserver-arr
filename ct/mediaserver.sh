@@ -15,6 +15,11 @@
 
 set -euo pipefail
 
+# Diagnostico temporario: mostra comando + linha exatos se o script morrer
+# por causa do set -e (sem isso, a saida seria totalmente silenciosa).
+# TODO: remover depois de validar o teste funcional completo.
+trap 'echo ">>> ERRO: comando [$BASH_COMMAND] falhou na linha $LINENO (codigo $?)" >&2' ERR
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(dirname "$SCRIPT_DIR")"
 INSTALL_SCRIPT="$REPO_ROOT/install/mediaserver-install.sh"
