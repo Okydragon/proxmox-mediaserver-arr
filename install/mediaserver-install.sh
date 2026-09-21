@@ -329,7 +329,12 @@ apply_qbt_password() {
         --data-urlencode "password=${temp_password}" \
         "http://localhost:8080/api/v2/auth/login")
 
-    if [ "$login_http" != "200" ]; then
+    # A partir do qBittorrent 5.2.0, um login com sucesso passou a responder
+    # "204 No Content" (corpo vazio, so o cookie de sessao) em vez do antigo
+    # "200 Ok.". Se so aceitarmos 200 aqui, um login que na verdade funcionou
+    # e tratado como falha e a senha definitiva nunca chega a ser aplicada
+    # (foi exatamente isso que aconteceu no teste real: HTTP 204 == sucesso).
+    if [ "$login_http" != "200" ] && [ "$login_http" != "204" ]; then
         t qbt_login_failed
         rm -f "$cookie_jar"
         return 1
@@ -341,7 +346,11 @@ apply_qbt_password() {
         "http://localhost:8080/api/v2/app/setPreferences")
     rm -f "$cookie_jar"
 
-    if [ "$setpref_http" != "200" ]; then
+    # Mesmo motivo do login acima: desde o qBittorrent 5.2.0 qualquer endpoint
+    # cuja resposta de sucesso nao tem corpo (como este setPreferences) passou
+    # a responder 204 em vez de 200 ("WEBAPI: Send 204 when WebAPI response
+    # contains no data", release notes 5.2.0).
+    if [ "$setpref_http" != "200" ] && [ "$setpref_http" != "204" ]; then
         t qbt_setpref_failed
         return 1
     fi
